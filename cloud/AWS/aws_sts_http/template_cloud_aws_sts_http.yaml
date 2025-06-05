@@ -1,0 +1,240 @@
+zabbix_export:
+  version: '7.0'
+  template_groups:
+    - uuid: c2c162144c2d4c5491c8801193af4945
+      name: Templates/AWS
+  templates:
+    - uuid: d65abae1083e4f619b382193603ea632
+      template: AWS-STS-TEMPLATE
+      name: '#AWS-STS-TEMPLATE'
+      description: |
+        AWS Get Caller Identity
+        
+        Ref. https://docs.aws.amazon.com/ko_kr/STS/latest/APIReference/API_GetCallerIdentity.html
+      groups:
+        - name: Templates/AWS
+      items:
+        - uuid: 40d3d6990bf24312bc1915d8864182f3
+          name: 'AWS Account ID'
+          type: DEPENDENT
+          key: aws.sts.accounid
+          delay: '0'
+          value_type: TEXT
+          trends: '0'
+          inventory_link: CONTACT
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.Account
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: aws.sts.identity
+        - uuid: e9702371e6404f57ab4be6b706aeaed2
+          name: 'AWS Get Caller Identity'
+          type: SCRIPT
+          key: aws.sts.identity
+          delay: 1h
+          value_type: TEXT
+          trends: '0'
+          params: |
+            var AWS = {
+                params: {},
+                metadata: 'http://169.254.169.254/latest/meta-data/iam/security-credentials',
+            
+                getField: function (data, path) {
+                    var steps = path.split('.');
+                    for (var i = 0; i < steps.length; i++) {
+                        var step = steps[i];
+                        if (typeof data !== 'object' || typeof data[step] === 'undefined') {
+                            throw 'Required field was not found: ' + path;
+                        }
+            
+                        data = data[step];
+                    }
+            
+                    return data;
+                },
+            
+                setParams: function (params) {
+                    AWS.params['proxy'] = params.proxy;
+                    switch (AWS.getField(params, 'auth_type')) {
+                        case 'role_base':
+                            AWS.params['auth_type'] = 'role_base';
+                            var request = new HttpRequest();
+                            if (typeof AWS.params.proxy !== 'undefined' && AWS.params.proxy !== '') {
+                                request.setProxy(AWS.params.proxy);
+                            }
+                            var IamRoleName = request.get(AWS.metadata);
+            
+                            if (request.getStatus() !== 200 || IamRoleName === null || IamRoleName === '') {
+                                throw 'Error getting security credentials from instance metadata. Role not found.';
+                            }
+            
+                            credentials = request.get(AWS.metadata + '/' + encodeURI(IamRoleName));
+            
+                            if (request.getStatus() !== 200 || credentials === null || credentials === '') {
+                                throw 'Error getting security credentials from instance metadata.';
+                            }
+            
+                            try {
+                                credentials = JSON.parse(credentials);
+                            } catch (error) {
+                                throw 'Failed to parse response received from instance metadata. Check debug log for more information.';
+                            }
+            
+                            ['AccessKeyId', 'SecretAccessKey', 'Token'].forEach(function (field) {
+                                if (typeof credentials !== 'object' || typeof credentials[field] === 'undefined' || credentials[field] === '') {
+                                    throw 'Required credentials is not set: "' + field + '".';
+                                }
+                                AWS.params[field] = credentials[field];
+                            });
+                            break;
+                        case 'access_key':
+                        default:
+                            AWS.params['auth_type'] = 'access_key';
+                            ['AccessKeyId', 'SecretAccessKey'].forEach(function (field) {
+                                if (typeof params !== 'object' || typeof params[field] === 'undefined' || params[field] === '') {
+                                    throw 'Required param is not set: "' + field + '".';
+                                }
+                                AWS.params[field] = params[field];
+                            });
+                    }
+                },
+            
+                sign: function (key, message) {
+                    var hex = hmac('sha256', key, message);
+            
+                    if ((hex.length % 2) === 1) {
+                        throw 'Invalid length of a hex string!';
+                    }
+            
+                    var result = new Int8Array(hex.length / 2);
+                    for (var i = 0, b = 0; i < hex.length; i += 2, b++) {
+                        result[b] = parseInt(hex.substring(i, i + 2), 16);
+                    }
+            
+                    return result;
+                },
+            
+                request: function (method, region, service, request_data) {
+                    if (typeof request_data === 'undefined' || request_data === null) {
+                        request_data = '';
+                    } else {
+                        request_data = AWS.prepareParams(request_data);
+                    }
+            
+                    var amzdate = (new Date()).toISOString().replace(/\.\d+Z/, 'Z').replace(/[-:]/g, ''),
+                        date = amzdate.replace(/T\d+Z/, ''),
+                        host = 'sts.amazonaws.com',
+                        canonical_uri = '/',
+                        canonical_querystring = '',
+                        canonical_headers = 'host:' + host + '\n' + 'x-amz-date:' + amzdate + '\n',
+                        signed_headers = 'host;x-amz-date',
+                        payload_hash = sha256(request_data),
+                        canonical_request = method + '\n' + canonical_uri + '\n' + canonical_querystring + '\n' + canonical_headers + '\n' + signed_headers + '\n' + payload_hash,
+                        credential_scope = date + '/' + region + '/' + service + '/' + 'aws4_request',
+                        string_to_sign = 'AWS4-HMAC-SHA256' + '\n' + amzdate + '\n' + credential_scope + '\n' + sha256(canonical_request),
+                        signing_key = AWS.getSignatureKey(AWS.params.SecretAccessKey, date, region, service),
+                        signature = hmac('sha256', signing_key, string_to_sign),
+                        authorization_header = 'AWS4-HMAC-SHA256 Credential=' + AWS.params.AccessKeyId + '/' + credential_scope + ', SignedHeaders=' + signed_headers + ', Signature=' + signature;
+            
+                    var request = new HttpRequest(),
+                        url = 'https://' + host + canonical_uri;
+            
+                    if (typeof AWS.params.proxy !== 'undefined' && AWS.params.proxy !== '') {
+                        request.setProxy(AWS.params.proxy);
+                    }
+                    request.addHeader('Content-Type: application/x-www-form-urlencoded');
+                    request.addHeader('X-Amz-Date: ' + amzdate);
+                    request.addHeader('Authorization: ' + authorization_header);
+                    if (AWS.params.auth_type === 'role_base') {
+                        request.addHeader('X-Amz-Security-Token: ' + AWS.params.Token);
+                    }
+            
+                    response = request.post(url, request_data);
+                    if (request.getStatus() !== 200) {
+                        throw 'Request failed with status code ' + request.getStatus() + ': ' + response;
+                    }
+            
+                    Zabbix.log(4, '[ AWS STS ] Raw response: ' + response);
+            
+                    if (response !== null) {
+                        try {
+                            response = AWS.parseXML(response);
+                        } catch (error) {
+                            throw 'Failed to parse response received from AWS STS API. Check debug log for more information. Raw response: ' + response;
+                        }
+                    }
+            
+                    return response;
+                },
+            
+                parseXML: function (xmlStr) {
+                    var result = {};
+                    var accountMatch = xmlStr.match(/<Account>(.*)<\/Account>/);
+                    var userIdMatch = xmlStr.match(/<UserId>(.*)<\/UserId>/);
+                    var arnMatch = xmlStr.match(/<Arn>(.*)<\/Arn>/);
+            
+                    if (accountMatch) {
+                        result.Account = accountMatch[1];
+                    }
+                    if (userIdMatch) {
+                        result.UserId = userIdMatch[1];
+                    }
+                    if (arnMatch) {
+                        result.Arn = arnMatch[1];
+                    }
+            
+                    return result;
+                },
+            
+                prepareParams: function (params) {
+                    var result = [];
+                    Object.keys(params).sort().forEach(function (key) {
+                        result.push(key + '=' + encodeURIComponent(params[key]));
+                    });
+                    return result.join('&');
+                },
+            
+                getSignatureKey: function (key, dateStamp, regionName, serviceName) {
+                    var kDate = AWS.sign('AWS4' + key, dateStamp);
+                    var kRegion = AWS.sign(kDate, regionName);
+                    var kService = AWS.sign(kRegion, serviceName);
+                    var kSigning = AWS.sign(kService, 'aws4_request');
+                    return kSigning;
+                },
+            
+                getCallerIdentity: function () {
+                    var payload = {
+                        Action: 'GetCallerIdentity',
+                        Version: '2011-06-15'
+                    };
+                    var result = AWS.request('POST', 'us-east-1', 'sts', payload);
+                    if (typeof result !== 'object' || typeof result.Account === 'undefined') {
+                        throw 'Cannot get caller identity from AWS STS API. Check debug log for more information. Raw result: ' + JSON.stringify(result);
+                    }
+            
+                    return result;
+                }
+            };
+            
+            try {
+                AWS.setParams(JSON.parse(value));
+                return JSON.stringify(AWS.getCallerIdentity());
+            } catch (error) {
+                error += (String(error).endsWith('.')) ? '' : '.';
+                Zabbix.log(3, '[ AWS STS ] ERROR: ' + error);
+            
+                return JSON.stringify({'error': error});
+            }
+          parameters:
+            - name: AccessKeyId
+              value: '{$AWS.ACCESS.KEY.ID}'
+            - name: auth_type
+              value: '{$AWS.AUTH_TYPE}'
+            - name: proxy
+              value: '{$AWS.PROXY}'
+            - name: region
+              value: '{$AWS.REGION}'
+            - name: SecretAccessKey
+              value: '{$AWS.SECRET.ACCESS.KEY}'

@@ -1,0 +1,400 @@
+zabbix_export:
+  version: '7.0'
+  template_groups:
+    - uuid: c2c162144c2d4c5491c8801193af4945
+      name: Templates/AWS
+  templates:
+    - uuid: 42574058221c4b48bfcb5aca9fe2b732
+      template: AWS-VPN-TEMPLATE
+      name: '#AWS-VPN-TEMPLATE'
+      templates:
+        - name: AWS-STS-TEMPLATE
+      groups:
+        - name: Templates/AWS
+      items:
+        - uuid: 4b7ad08439834f5cadd188b5a5da29f8
+          name: 'Get VPN Data'
+          type: SCRIPT
+          key: aws.vpn.get_id
+          delay: 1h
+          value_type: TEXT
+          trends: '0'
+          params: |
+            // 자빅스 파라미터 값 출력 스크립트 
+            
+            var AWS = {
+                params: {},
+                setParams: function (params) {
+                    ['region', 'vpn_id'].forEach(function (field) {
+                        if (typeof params !== 'object' || typeof params[field] === 'undefined' || params[field] === '') {
+                            throw 'Required param is not set: "' + field + '".';
+                        }
+                        AWS.params[field] = params[field];
+                        // 매개변수 출력
+                        console.log('Set param: ' + field + ' = ' + params[field]);
+                    });
+                }
+            };
+            
+            try {
+                AWS.setParams(JSON.parse(value));
+                return JSON.stringify(AWS.params); // 명시적으로 값을 반환
+            } catch (error) {
+                error += (String(error).endsWith('.')) ? '' : '.';
+                Zabbix.log(3, '[ AWS VPN ] ERROR: ' + error);
+                return JSON.stringify({'error': error});
+            }
+          parameters:
+            - name: region
+              value: '{$AWS.REGION}'
+            - name: vpn_id
+              value: '{$AWS.VPN.ID}'
+        - uuid: 9a7313a48a644653942da1c0f715b9f0
+          name: 'Get metrics data'
+          type: SCRIPT
+          key: aws.vpn.get_metrics
+          value_type: TEXT
+          trends: '0'
+          params: |
+            var AWS = {
+            	params: {},
+            	request_period: 600,
+            	metadata: 'http://169.254.169.254/latest/meta-data/iam/security-credentials',
+            
+            	getField: function (data, path) {
+            		var steps = path.split('.');
+            		for (var i = 0; i < steps.length; i++) {
+            			var step = steps[i];
+            			if (typeof data !== 'object' || typeof data[step] === 'undefined') {
+            				throw 'Required field was not found: ' + path;
+            			}
+            
+            			data = data[step];
+            		}
+            
+            		return data;
+            	},
+            
+            	setParams: function (params) {
+            		AWS.params['proxy'] = params.proxy;
+            		switch (AWS.getField(params, 'auth_type')) {
+            			case 'role_base':
+            				AWS.params['auth_type'] = 'role_base';
+            				var request = new HttpRequest();
+            				if (typeof AWS.params.proxy !== 'undefined' && AWS.params.proxy !== '') {
+            					request.setProxy(AWS.params.proxy);
+            				}
+            				var IamRoleName = request.get(AWS.metadata);
+            
+            				if (request.getStatus() !== 200 || IamRoleName === null || IamRoleName === '') {
+            					throw 'Error getting security credentials from instance metadata. Role not found.';
+            				}
+            
+            				credentials = request.get(AWS.metadata + '/' + encodeURI(IamRoleName));
+            
+            				if (request.getStatus() !== 200 || credentials === null || credentials === '') {
+            					throw 'Error getting security credentials from instance metadata.';
+            				}
+            
+            				try {
+            					credentials = JSON.parse(credentials);
+            				}
+            				catch (error) {
+            					throw 'Failed to parse response received from instance metadata. Check debug log for more information.';
+            				}
+            
+            				['AccessKeyId', 'SecretAccessKey', 'Token'].forEach(function (field) {
+            					if (typeof credentials !== 'object' || typeof credentials[field] === 'undefined' || credentials[field] === '') {
+            						throw 'Required credentials is not set: "' + field + '".';
+            					};
+            					AWS.params[field] = credentials[field];
+            				});
+            				break;
+            			case 'access_key':
+            			default:
+            				AWS.params['auth_type'] = 'access_key';
+            				['AccessKeyId', 'SecretAccessKey'].forEach(function (field) {
+            					if (typeof params !== 'object' || typeof params[field] === 'undefined' || params[field] === '') {
+            						throw 'Required param is not set: "' + field + '".';
+            					}
+            					AWS.params[field] = params[field];
+            				});
+            		}
+            		['region', 'vpn_id'].forEach(function (field) {
+            			if (typeof params !== 'object' || typeof params[field] === 'undefined' || params[field] === '') {
+            				throw 'Required param is not set: "' + field + '".';
+            			}
+            			AWS.params[field] = params[field];
+            		});
+            	},
+            
+            	sign: function (key, message) {
+            		var hex = hmac('sha256', key, message);
+            
+            		if ((hex.length % 2) === 1) {
+            			throw 'Invalid length of a hex string!';
+            		}
+            
+            		var result = new Int8Array(hex.length / 2);
+            		for (var i = 0, b = 0; i < hex.length; i += 2, b++) {
+            			result[b] = parseInt(hex.substring(i, i + 2), 16);
+            		}
+            
+            		return result;
+            	},
+            
+            	renderMetricQuery: function (period, vpn_id) {
+            		var metrics_list = [
+            			'TunnelState:None',
+            			'TunnelDataIn:Bytes',
+            			'TunnelDataOut:Bytes'
+            		];
+            
+            		var metric_payload = [];
+            		metrics_list.forEach(function (metric) {
+            			var parts = metric.split(':', 2);
+            			var name = parts[0].replace(/[^a-zA-Z0-9]/g, '');
+            			metric_payload.push({
+            				'Id': name.charAt(0).toLowerCase() + name.slice(1),
+            				'MetricStat': {
+            					'Metric': {
+            						'MetricName': parts[0],
+            						'Namespace': 'AWS/VPN',
+            						'Dimensions': [
+            							{
+            								'Name': 'VpnId',
+            								'Value': vpn_id
+            							}
+            						]
+            					},
+            					'Period': period,
+            					'Stat': 'Average',
+            					'Unit': parts[1]
+            				}
+            			});
+            		});
+            
+            		return metric_payload;
+            
+            	},
+            	prepareParams: function (params) {
+            		var result = [];
+            
+            		Object.keys(params).sort().forEach(function (key) {
+            			if (typeof params[key] !== 'object') {
+            				result.push(key + '=' + encodeURIComponent(params[key]));
+            			}
+            			else {
+            				result.push(prepareObject(key, params[key]));
+            			}
+            		});
+            
+            		return result.join('&');
+            	},
+            
+            	request: function (method, region, service, request_data) {
+            		if (typeof request_data === 'undefined' || request_data === null) {
+            			request_data = '';
+            		}
+            		else {
+            			request_data = JSON.stringify(request_data);
+            		}
+            
+            		var amzdate = (new Date()).toISOString().replace(/\.\d+Z/, 'Z').replace(/[-:]/g, ''),
+            			date = amzdate.replace(/T\d+Z/, ''),
+            			host = service + '.' + region + '.amazonaws.com',
+            			canonical_uri = '/',
+            			canonical_headers = 'content-encoding:amz-1.0\n' + 'host:' + host + '\n' + 'x-amz-date:' + amzdate + '\n',
+            			signed_headers = 'content-encoding;host;x-amz-date',
+            			canonical_request = method + '\n' + canonical_uri + '\n' + '\n' + canonical_headers + '\n' + signed_headers + '\n' + sha256(request_data),
+            			credential_scope = date + '/' + region + '/' + service + '/' + 'aws4_request',
+            			request_string = 'AWS4-HMAC-SHA256' + '\n' + amzdate + '\n' + credential_scope + '\n' + sha256(canonical_request),
+            			key = AWS.sign('AWS4' + AWS.params.SecretAccessKey, date);
+            
+            		key = AWS.sign(key, region);
+            		key = AWS.sign(key, service);
+            		key = AWS.sign(key, 'aws4_request');
+            
+            		var request = new HttpRequest(),
+            			url = 'https://' + host + canonical_uri;
+            
+            		if (typeof AWS.params.proxy !== 'undefined' && AWS.params.proxy !== '') {
+            			request.setProxy(AWS.params.proxy);
+            		}
+            		request.addHeader('x-amz-date: ' + amzdate);
+            		request.addHeader('X-Amz-Target: GraniteServiceVersion20100801.GetMetricData');
+            		request.addHeader('Accept: application/json');
+            		request.addHeader('Content-Type: application/json');
+            		request.addHeader('Content-Encoding: amz-1.0');
+            		request.addHeader('Authorization: ' + 'AWS4-HMAC-SHA256 Credential=' + AWS.params.AccessKeyId + '/' + credential_scope + ', ' + 'SignedHeaders=' + signed_headers + ', ' + 'Signature=' + hmac('sha256', key, request_string));
+            		if (AWS.params.auth_type === 'role_base')
+            			request.addHeader('X-Amz-Security-Token: ' + AWS.params.Token);
+            
+            		Zabbix.log(4, '[ AWS VPN ] Sending request: ' + url);
+            
+            		response = request.post(url, request_data);
+            		Zabbix.log(4, '[ AWS VPN ] Received response with status code ' + request.getStatus() + ': ' + response);
+            
+            		if (request.getStatus() !== 200) {
+            			throw 'Request failed with status code ' + request.getStatus() + ': ' + response;
+            		}
+            
+            		if (response !== null) {
+            			try {
+            				response = JSON.parse(response);
+            			}
+            			catch (error) {
+            				throw 'Failed to parse response received from AWS CloudWatch API. Check debug log for more information.';
+            			}
+            		}
+            
+            		return response;
+            	},
+            
+            	getMetricsData: function () {
+            		var payload = {},
+            			end_time = Math.floor((new Date().getTime()) / 1000),
+            			start_time = end_time - AWS.request_period;
+            
+            		payload['StartTime'] = start_time;
+            		payload['EndTime'] = end_time;
+            		payload['ScanBy'] = 'TimestampDescending';
+            		payload['MetricDataQueries'] = AWS.renderMetricQuery(AWS.request_period, AWS.params.vpn_id);
+            		result = AWS.request('POST', AWS.params.region, 'monitoring', payload);
+            		if (typeof result !== 'object' || typeof result.MetricDataResults !== 'object') {
+            			throw 'Cannot get metrics data from AWS CloudWatch API. Check debug log for more information.';
+            		}
+            
+            		return result.MetricDataResults;
+            	}
+            };
+            
+            try {
+            	AWS.setParams(JSON.parse(value));
+            
+            	return JSON.stringify(AWS.getMetricsData());
+            }
+            catch (error) {
+            	error += (String(error).endsWith('.')) ? '' : '.';
+            	Zabbix.log(3, '[ AWS VPN ] ERROR: ' + error);
+            
+            	return JSON.stringify({ 'error': error });
+            }
+          parameters:
+            - name: AccessKeyId
+              value: '{$AWS.ACCESS.KEY.ID}'
+            - name: auth_type
+              value: '{$AWS.AUTH_TYPE}'
+            - name: proxy
+              value: '{$AWS.PROXY}'
+            - name: region
+              value: '{$AWS.REGION}'
+            - name: SecretAccessKey
+              value: '{$AWS.SECRET.ACCESS.KEY}'
+            - name: vpn_id
+              value: '{$AWS.VPN.ID}'
+        - uuid: 577776222405440e8fdef31c8cf1ff8f
+          name: 'AWS Region'
+          type: DEPENDENT
+          key: aws.vpn.region
+          delay: '0'
+          value_type: TEXT
+          trends: '0'
+          inventory_link: LOCATION
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.region
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: aws.vpn.get_id
+        - uuid: 6e03ca44f5774ee9818a8b9aeb79c80c
+          name: TunnelDataIn
+          type: DEPENDENT
+          key: aws.vpn.tunnel_data_in
+          delay: '0'
+          value_type: FLOAT
+          trends: '0'
+          units: Bytes
+          description: |
+            고객 게이트웨이로부터 VPN 터널을 통해 연결 AWS 측에서 수신한 바이트입니다. 각 지표 데이터 포인트는 이전 데이터 포인트 이후 수신된 바이트 수를 나타냅니다. Sum 통계를 사용하면 이 기간에 수신된 총 바이트 수를 알 수 있습니다.
+            
+            이 지표는 복호화 이후 데이터를 계산합니다.
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.[?(@.Label == ''TunnelDataIn'')].Values.first().first()'
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: aws.vpn.get_metrics
+        - uuid: 0744a6bfceb14e21bf9a12fe45fe73d2
+          name: TunnelDataOut
+          type: DEPENDENT
+          key: aws.vpn.tunnel_data_out
+          delay: '0'
+          value_type: FLOAT
+          trends: '0'
+          units: Bytes
+          description: |
+            연결 AWS 측에서 VPN 터널을 통해 고객 게이트웨이로 전송된 바이트입니다. 각 지표 데이터 포인트는 이전 데이터 포인트 이후 전송된 바이트 수를 나타냅니다. Sum 통계를 사용하면 이 기간에 전송된 총 바이트 수를 알 수 있습니다.
+            
+            이 지표는 암호화 이전 데이터를 계산합니다.
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.[?(@.Label == ''TunnelDataOut'')].Values.first().first()'
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: aws.vpn.get_metrics
+        - uuid: bbb6323f12ea4c6dba54b590f94f0502
+          name: TunnelState
+          type: DEPENDENT
+          key: aws.vpn.tunnel_state
+          delay: '0'
+          value_type: FLOAT
+          trends: '0'
+          description: '터널의 상태입니다. 고정 VPN의 경우, 0은 DOWN(가동 중지)을 나타내고 1은 UP(가동)을 나타냅니다. BGP VPN의 경우 1은 ESTABLISHED(설정됨)를 나타내고, 0은 다른 모든 상태에 사용됩니다. 두 VPN 유형 모두에서 0과 1 사이의 값은 하나 이상의 터널이 UP이 아님을 나타냅니다.'
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - '$.[?(@.Label == ''TunnelState'')].Values.first().first()'
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: aws.vpn.get_metrics
+          triggers:
+            - uuid: 924205dabe9946368fa3f6d0096908ee
+              expression: 'avg(/AWS-VPN-TEMPLATE/aws.vpn.tunnel_state, 10m)<0.6'
+              name: '1 VPN Tunnel Down (10m)'
+              priority: HIGH
+            - uuid: f0c3271f5033491f8fd0f9228f486bbb
+              expression: 'avg(/AWS-VPN-TEMPLATE/aws.vpn.tunnel_state, 10m)<0.1'
+              name: '2 VPN Tunnel Down (10m)'
+              priority: DISASTER
+        - uuid: f92bde8f653442ed970774014eb429c6
+          name: 'AWS VPN ID'
+          type: DEPENDENT
+          key: aws.vpn.vpn_id
+          delay: '0'
+          value_type: TEXT
+          trends: '0'
+          inventory_link: SERIALNO_A
+          preprocessing:
+            - type: JSONPATH
+              parameters:
+                - $.vpn_id
+              error_handler: DISCARD_VALUE
+          master_item:
+            key: aws.vpn.get_id
+      macros:
+        - macro: '{$AWS.ACCESS.KEY.ID}'
+          description: 'Access key ID.'
+        - macro: '{$AWS.PROXY}'
+          description: 'Sets HTTP proxy value. If this macro is empty then no proxy is used.'
+        - macro: '{$AWS.REGION}'
+          value: ap-northeast-2
+          description: 'AWS Site to Site VPN Region code. (Default: ap-northeast-2)'
+        - macro: '{$AWS.SECRET.ACCESS.KEY}'
+          type: SECRET_TEXT
+          description: 'Secret access key.'
+        - macro: '{$AWS.VPN.ID}'
+          description: 'Site to Site VPN ID'
