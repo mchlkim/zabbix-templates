@@ -6,11 +6,11 @@ Template to monitor **AWS Site-to-Site VPN** using HTTP agent and custom JavaScr
 
 The template uses AWS CloudWatch API via HTTP script to collect metrics for VPN tunnels.
 
-Supported version: Zabbix 6.4 or higher
+Supported version: Zabbix 7.0 or higher
 
 ## Requirements
 
-| Zabbix version | 6.4 and higher |
+| Zabbix version | 7.0 and higher |
 |----------------|----------------|
 
 ## Setup

@@ -6,12 +6,12 @@ Template to monitor **AWS STS (Security Token Service)** using HTTP agent and cu
 
 The template queries the `GetCallerIdentity` API to retrieve information about the IAM identity used to make the request.
 
-Supported version: Zabbix 6.4 or higher
+Supported version: Zabbix 7.0 or higher
 
 ## Requirements
 
-| Zabbix version | 6.4 and higher |
-|----------------|----------------|
+| Zabbix version | 7.0 and higher |
+|----------------|------------------|
 
 ## Setup
 
