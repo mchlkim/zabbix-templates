@@ -20,7 +20,7 @@ zabbix_export:
           value_type: TEXT
           trends: '0'
           params: |
-            // 자빅스 파라미터 값 출력 스크립트 
+            // Zabbix parameter output script
             
             var AWS = {
                 params: {},
@@ -30,7 +30,7 @@ zabbix_export:
                             throw 'Required param is not set: "' + field + '".';
                         }
                         AWS.params[field] = params[field];
-                        // 매개변수 출력
+                        // Output parameters
                         console.log('Set param: ' + field + ' = ' + params[field]);
                     });
                 }
@@ -38,7 +38,7 @@ zabbix_export:
             
             try {
                 AWS.setParams(JSON.parse(value));
-                return JSON.stringify(AWS.params); // 명시적으로 값을 반환
+                return JSON.stringify(AWS.params); // return value explicitly
             } catch (error) {
                 error += (String(error).endsWith('.')) ? '' : '.';
                 Zabbix.log(3, '[ AWS VPN ] ERROR: ' + error);
@@ -316,10 +316,10 @@ zabbix_export:
           value_type: FLOAT
           trends: '0'
           units: Bytes
-          description: |
-            고객 게이트웨이로부터 VPN 터널을 통해 연결 AWS 측에서 수신한 바이트입니다. 각 지표 데이터 포인트는 이전 데이터 포인트 이후 수신된 바이트 수를 나타냅니다. Sum 통계를 사용하면 이 기간에 수신된 총 바이트 수를 알 수 있습니다.
-            
-            이 지표는 복호화 이후 데이터를 계산합니다.
+            description: |
+              Bytes received on the AWS side of the connection through the VPN tunnel from the customer gateway. Each metric data point represents the number of bytes received since the previous data point. Use the Sum statistic to determine the total number of bytes received for the period.
+
+              This metric counts data after decryption.
           preprocessing:
             - type: JSONPATH
               parameters:
@@ -335,10 +335,10 @@ zabbix_export:
           value_type: FLOAT
           trends: '0'
           units: Bytes
-          description: |
-            연결 AWS 측에서 VPN 터널을 통해 고객 게이트웨이로 전송된 바이트입니다. 각 지표 데이터 포인트는 이전 데이터 포인트 이후 전송된 바이트 수를 나타냅니다. Sum 통계를 사용하면 이 기간에 전송된 총 바이트 수를 알 수 있습니다.
-            
-            이 지표는 암호화 이전 데이터를 계산합니다.
+            description: |
+              Bytes sent from the AWS side of the connection through the VPN tunnel to the customer gateway. Each metric data point represents the number of bytes sent since the previous data point. Use the Sum statistic to determine the total number of bytes sent for the period.
+
+              This metric counts data before encryption.
           preprocessing:
             - type: JSONPATH
               parameters:
@@ -353,7 +353,7 @@ zabbix_export:
           delay: '0'
           value_type: FLOAT
           trends: '0'
-          description: '터널의 상태입니다. 고정 VPN의 경우, 0은 DOWN(가동 중지)을 나타내고 1은 UP(가동)을 나타냅니다. BGP VPN의 경우 1은 ESTABLISHED(설정됨)를 나타내고, 0은 다른 모든 상태에 사용됩니다. 두 VPN 유형 모두에서 0과 1 사이의 값은 하나 이상의 터널이 UP이 아님을 나타냅니다.'
+          description: 'The state of the tunnel. For static VPNs, 0 is DOWN and 1 is UP. For BGP VPNs, 1 represents ESTABLISHED and 0 is used for all other states. For both VPN types, values between 0 and 1 indicate that one or more tunnels are not UP.'
           preprocessing:
             - type: JSONPATH
               parameters:
